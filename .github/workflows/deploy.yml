@@ -1,0 +1,61 @@
+# Workflow reutilizable de despliegue a Kubernetes.
+# Por cada GitHub Environment (staging / production) define:
+#   secrets: KUBE_CONFIG  (kubeconfig en base64)
+#   vars:    K8S_NAMESPACE, APP_NAME, APP_URL
+# En "production" activa "Required reviewers" para exigir aprobación manual.
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.APP_URL }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      NS: ${{ vars.K8S_NAMESPACE }}
+      APP: ${{ vars.APP_NAME }}
+    steps:
+      - uses: azure/setup-kubectl@v4
+
+      - name: Configurar kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Actualizar imagen
+        run: |
+          kubectl -n "$NS" set image "deployment/$APP" app="${{ inputs.image }}"
+          kubectl -n "$NS" annotate "deployment/$APP" \
+            kubernetes.io/change-cause="${{ github.sha }} por ${{ github.actor }}" --overwrite
+
+      - name: Esperar rollout
+        run: kubectl -n "$NS" rollout status "deployment/$APP" --timeout=300s
+
+      - name: Smoke test
+        run: |
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors \
+            "${{ vars.APP_URL }}/actuator/health" | grep -q '"status":"UP"'
+
+      - name: Rollback automático
+        if: failure()
+        run: |
+          kubectl -n "$NS" rollout undo "deployment/$APP"
+          kubectl -n "$NS" rollout status "deployment/$APP" --timeout=300s
