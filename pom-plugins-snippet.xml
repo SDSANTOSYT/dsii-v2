@@ -1,0 +1,20 @@
+<!-- Añadir en <build><plugins> del pom.xml para que "mvnw verify" ejecute
+     tests de integración (*IT.java) y genere el reporte de cobertura -->
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-failsafe-plugin</artifactId>
+  <executions>
+    <execution>
+      <goals><goal>integration-test</goal><goal>verify</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+<plugin>
+  <groupId>org.jacoco</groupId>
+  <artifactId>jacoco-maven-plugin</artifactId>
+  <version>0.8.12</version>
+  <executions>
+    <execution><id>prepare</id><goals><goal>prepare-agent</goal></goals></execution>
+    <execution><id>report</id><phase>verify</phase><goals><goal>report</goal></goals></execution>
+  </executions>
+</plugin>
