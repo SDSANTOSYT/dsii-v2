@@ -1,8 +1,12 @@
 # Workflow reutilizable de despliegue a Kubernetes.
-# Por cada GitHub Environment (staging / production) define:
+#
+# MODO REAL (use-kind = false): por cada GitHub Environment (staging / production) define
 #   secrets: KUBE_CONFIG  (kubeconfig en base64)
 #   vars:    K8S_NAMESPACE, APP_NAME, APP_URL
-# En "production" activa "Required reviewers" para exigir aprobación manual.
+#   En "production" activa "Required reviewers" para exigir aprobación manual.
+#
+# MODO KIND (use-kind = true): crea un cluster desechable dentro del runner y despliega ahí.
+#   No necesita KUBE_CONFIG ni variables. Sirve para probar este workflow sin cluster real.
 name: Deploy
 
 on:
@@ -14,9 +18,14 @@ on:
       image:
         type: string
         required: true
+      use-kind:
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   deploy:
@@ -29,17 +38,44 @@ jobs:
       group: deploy-${{ inputs.environment }}
       cancel-in-progress: false
     env:
-      NS: ${{ vars.K8S_NAMESPACE }}
-      APP: ${{ vars.APP_NAME }}
+      NS: ${{ vars.K8S_NAMESPACE || 'default' }}
+      APP: ${{ vars.APP_NAME || 'mi-servicio' }}
     steps:
+      - uses: actions/checkout@v7
+
       - uses: azure/setup-kubectl@v5
 
+      # ---- Modo real: conectarse al cluster con el kubeconfig del entorno
       - name: Configurar kubeconfig
+        if: ${{ !inputs.use-kind }}
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
 
+      # ---- Modo kind: cluster desechable + manifiestos + permiso para bajar la imagen de GHCR
+      - name: Crear cluster de Kubernetes (kind)
+        if: ${{ inputs.use-kind }}
+        uses: helm/kind-action@v1.15.0
+        with:
+          cluster_name: ${{ inputs.environment }}
+
+      - name: Preparar cluster (manifiestos y acceso a GHCR)
+        if: ${{ inputs.use-kind }}
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl -n "$NS" create secret docker-registry ghcr \
+            --docker-server=ghcr.io \
+            --docker-username="$GH_ACTOR" \
+            --docker-password="$GH_TOKEN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$NS" patch serviceaccount default \
+            -p '{"imagePullSecrets":[{"name":"ghcr"}]}'
+
+      # ---- Común a ambos modos
       - name: Actualizar imagen
         run: |
           kubectl -n "$NS" set image "deployment/$APP" app="${{ inputs.image }}"
@@ -51,8 +87,21 @@ jobs:
 
       - name: Smoke test
         run: |
-          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors \
-            "${{ vars.APP_URL }}/actuator/health" | grep -q '"status":"UP"'
+          if [ "${{ inputs.use-kind }}" = "true" ]; then
+            kubectl -n "$NS" port-forward "deployment/$APP" 8080:8080 &
+            sleep 5
+            URL="http://localhost:8080"
+          else
+            URL="${{ vars.APP_URL }}"
+          fi
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "$URL/actuator/health" | grep -q '"status":"UP"'
+          echo "Smoke test OK en $URL"
+
+      - name: Estado del cluster
+        if: always() && inputs.use-kind
+        run: |
+          kubectl -n "$NS" get pods,deploy -o wide
+          kubectl -n "$NS" logs "deployment/$APP" --tail=30 || true
 
       - name: Rollback automático
         if: failure()
