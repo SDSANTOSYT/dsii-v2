@@ -207,6 +207,8 @@ jobs:
     needs: build-test
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment:
+       name: demo
     steps:
       - uses: actions/checkout@v7
 
