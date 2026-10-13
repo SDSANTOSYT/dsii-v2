@@ -56,7 +56,7 @@ jobs:
       # ---- Modo kind: cluster desechable + manifiestos + permiso para bajar la imagen de GHCR
       - name: Crear cluster de Kubernetes (kind)
         if: ${{ inputs.use-kind }}
-        uses: helm/kind-action@v1.15.0
+        uses: helm/kind-action@v1.15.1
         with:
           cluster_name: ${{ inputs.environment }}
 
